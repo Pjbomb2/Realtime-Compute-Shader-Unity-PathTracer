@@ -359,6 +359,7 @@ namespace CommonVars {
         public Vector3 radiance;
         public float sumEnergy;
         public float energy;
+        public float area;
     }
 
     [System.Serializable]

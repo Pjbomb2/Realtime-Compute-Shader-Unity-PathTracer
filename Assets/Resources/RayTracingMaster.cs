@@ -40,6 +40,10 @@ public class RayTracingMaster : MonoBehaviour {
     private ComputeBuffer _LightMeshes;
     private ComputeBuffer _OctreeBuffer;
     private ComputeBuffer _VoxelTLAS;
+    private ComputeBuffer _CurrentReservoir;
+    private ComputeBuffer _PreviousReservoir;
+    private ComputeBuffer _IntermediateReservoir;
+    private int FramesSinceStart2;
     [HideInInspector] public BufferSizeData[] BufferSizes;
     public int SampleCount;
 
@@ -74,6 +78,8 @@ public class RayTracingMaster : MonoBehaviour {
     private int threadGroupsY;
     private int threadGroupsX2;
     private int threadGroupsY2;
+    private int threadGroupsX3;
+    private int threadGroupsY3;
     private int GenKernel;
     private int TraceKernel;
     private int ShadeKernel;
@@ -81,6 +87,9 @@ public class RayTracingMaster : MonoBehaviour {
     private int FinalizeKernel;
     private int OctreeKernel;
     private int OctreeShadowKernel;
+    private int ReservoirKernel;
+    private int ReservoirSpatialKernel;
+    private int ReservoirCopyKernel;
     private int FramesSinceStart;
     private Matrix4x4 PrevViewProjection;
     private int TargetWidth;
@@ -118,6 +127,8 @@ public class RayTracingMaster : MonoBehaviour {
         threadGroupsY = Mathf.CeilToInt(SourceHeight / 1.0f);
         threadGroupsX2 = Mathf.CeilToInt(SourceWidth / 8.0f);
         threadGroupsY2 = Mathf.CeilToInt(SourceHeight / 8.0f);
+        threadGroupsX3 = Mathf.CeilToInt(SourceWidth / 16.0f);
+        threadGroupsY3 = Mathf.CeilToInt(SourceHeight / 16.0f);
         GenKernel = RayTracingShader.FindKernel("Generate");
         TraceKernel = RayTracingShader.FindKernel("kernel_trace");
         ShadowKernel = RayTracingShader.FindKernel("kernel_shadow");
@@ -125,8 +136,12 @@ public class RayTracingMaster : MonoBehaviour {
         FinalizeKernel = RayTracingShader.FindKernel("kernel_finalize");
         OctreeKernel = RayTracingShader.FindKernel("kernel_octree_trace");
         OctreeShadowKernel = RayTracingShader.FindKernel("kernel_shadow_octree");
+        ReservoirKernel = RayTracingShader.FindKernel("kernel_reservoir");
+        ReservoirSpatialKernel = RayTracingShader.FindKernel("kernel_reservoir_spatial");
+        ReservoirCopyKernel = RayTracingShader.FindKernel("kernel_reservoir_copy");
 
         Atmo = new AtmosphereGenerator(AtmosphereGeneratorShader, 6371.0f, 6403.0f);
+        FramesSinceStart2 = 0;
 
         Denoisers = new Denoiser(_camera, SourceWidth, SourceHeight);
         HasStarted = true;
@@ -155,6 +170,8 @@ public class RayTracingMaster : MonoBehaviour {
         _LightMeshes?.Release();
         _OctreeBuffer?.Release();
         _VoxelTLAS?.Release();
+        _CurrentReservoir?.Release();
+        _PreviousReservoir?.Release();
     }
     public static Vector3 SunDirection;
     private void Update() {
@@ -198,7 +215,7 @@ public class RayTracingMaster : MonoBehaviour {
             if(DoTLASUpdates) {
                 if(Assets.UpdateTLAS()) {
                     CreateComputeBuffer(ref _CompactedMeshData, Assets.MyMeshesCompacted, 176);
-                    CreateComputeBuffer(ref _LightTriangles, Assets.AggLightTriangles, 68);
+                    CreateComputeBuffer(ref _LightTriangles, Assets.AggLightTriangles, 72);
                     CreateComputeBuffer(ref _MaterialDataBuffer, Assets._Materials, 136);
                     CreateComputeBuffer(ref _UnityLights, Assets.UnityLights, 56);
                     CreateComputeBuffer(ref _LightMeshes, Assets.LightMeshes, 92);
@@ -227,7 +244,7 @@ public class RayTracingMaster : MonoBehaviour {
         
         CreateComputeBuffer(ref _MaterialDataBuffer, Assets._Materials, 136);
         CreateComputeBuffer(ref _CompactedMeshData, Assets.MyMeshesCompacted, 176);
-        CreateComputeBuffer(ref _LightTriangles, Assets.AggLightTriangles, 68);
+        CreateComputeBuffer(ref _LightTriangles, Assets.AggLightTriangles, 72);
 
         CreateDynamicBuffer(ref _RayBuffer1, 48);
 //        CreateDynamicBuffer(ref _ShadowBuffer, 44);
@@ -235,6 +252,8 @@ public class RayTracingMaster : MonoBehaviour {
         CreateDynamicBuffer(ref _RayBuffer2, 48);
         CreateDynamicBuffer(ref _ColorBuffer, 48);
         CreateDynamicBuffer(ref _BufferSizes, 28);
+        CreateDynamicBuffer(ref _CurrentReservoir, 48);
+        CreateDynamicBuffer(ref _PreviousReservoir, 48);
     }
 
 
@@ -298,6 +317,13 @@ public class RayTracingMaster : MonoBehaviour {
         RayTracingShader.SetVector("Right", _camera.transform.right);
         RayTracingShader.SetVector("Forward", _camera.transform.forward);
 
+        RayTracingShader.SetVector("camPos", _camera.transform.position);
+        Matrix4x4 viewprojmatrix = _camera.projectionMatrix * _camera.worldToCameraMatrix;
+        var PrevMatrix = PrevViewProjection;
+        RayTracingShader.SetMatrix("viewprojection", viewprojmatrix);
+        RayTracingShader.SetMatrix("prevviewprojection", PrevMatrix);
+        PrevViewProjection = viewprojmatrix;
+
         RayTracingShader.SetFloat("VolumeDensity", VolumeDensity * VolumeDensity);
 
         RayTracingShader.SetMatrix("ViewMatrix", _camera.worldToCameraMatrix);
@@ -338,17 +364,27 @@ public class RayTracingMaster : MonoBehaviour {
             RayTracingShader.SetInt("lighttricount", Assets.LightTriCount);
             RayTracingShader.SetInt("screen_width", SourceWidth);
             RayTracingShader.SetInt("screen_height", SourceHeight);
+
+            SetComputeBuffer(ReservoirKernel, "CurrentReservoir", _CurrentReservoir);
+            SetComputeBuffer(ReservoirKernel, "PreviousReservoir", _PreviousReservoir);
+            SetComputeBuffer(ShadeKernel, "CurrentReservoir", _CurrentReservoir);
+            SetComputeBuffer(ShadeKernel, "PreviousReservoir", _PreviousReservoir);
+
             SetComputeBuffer(ShadeKernel, "_LightMeshes", _LightMeshes);
+            SetComputeBuffer(ReservoirKernel, "_LightMeshes", _LightMeshes);
             SetComputeBuffer(ShadeKernel, "_Materials", _MaterialDataBuffer); 
             SetComputeBuffer(GenKernel, "GlobalRays1", _RayBuffer1);
             SetComputeBuffer(TraceKernel, "GlobalRays1", _RayBuffer1);
             SetComputeBuffer(ShadeKernel, "GlobalRays1", _RayBuffer1);
 
             SetComputeBuffer(ShadeKernel, "LightTriangles", _LightTriangles);  
+            SetComputeBuffer(ReservoirKernel, "LightTriangles", _LightTriangles);  
+            SetComputeBuffer(ReservoirSpatialKernel, "LightTriangles", _LightTriangles);  
 
             SetComputeBuffer(ShadowKernel, "ShadowRaysBuffer", _ShadowBuffer);
             SetComputeBuffer(ShadeKernel, "ShadowRaysBuffer", _ShadowBuffer);
             SetComputeBuffer(OctreeShadowKernel, "ShadowRaysBuffer", _ShadowBuffer);
+            SetComputeBuffer(ReservoirCopyKernel, "ShadowRaysBuffer", _ShadowBuffer);
 
             SetComputeBuffer(GenKernel, "GlobalRays2", _RayBuffer2);
             SetComputeBuffer(TraceKernel, "GlobalRays2", _RayBuffer2);
@@ -373,6 +409,8 @@ public class RayTracingMaster : MonoBehaviour {
             SetComputeBuffer(OctreeShadowKernel, "_MeshData", _CompactedMeshData);
 
             SetComputeBuffer(ShadeKernel, "_UnityLights", _UnityLights);
+            SetComputeBuffer(ReservoirKernel, "_UnityLights", _UnityLights);
+            SetComputeBuffer(ReservoirSpatialKernel, "_UnityLights", _UnityLights);
 
             RayTracingShader.SetFloat("sun_angular_radius", 0.05f);
             RayTracingShader.SetTexture(ShadeKernel, "ScatterTex", Atmo._RayleighTex);
@@ -442,14 +480,25 @@ public class RayTracingMaster : MonoBehaviour {
      }
     private void Render(RenderTexture destination) {
         float CurrentSample;
-        InitRenderTexture();       
+        InitRenderTexture();      
+        RayTracingShader.SetInt("curframe", FramesSinceStart2); 
         RayTracingShader.SetTexture(ShadeKernel, "TempPosTex", _PosTex);
         RayTracingShader.SetTexture(ShadeKernel, "TempNormTex", _NormTex);
         RayTracingShader.SetTexture(ShadeKernel, "TempAlbedoTex", _Albedo);
         RayTracingShader.SetTexture(OctreeKernel, "_DebugTex", _DebugTex);
         RayTracingShader.SetTexture(ShadeKernel, "_DebugTex", _DebugTex);
         RayTracingShader.SetTexture(TraceKernel, "_DebugTex", _DebugTex);
+        RayTracingShader.SetTexture(OctreeShadowKernel, "_DebugTex", _DebugTex);
+        RayTracingShader.SetTexture(ReservoirKernel, "_DebugTex", _DebugTex);
+        RayTracingShader.SetTexture(ReservoirSpatialKernel, "_DebugTex", _DebugTex);
+        RayTracingShader.SetTexture(ReservoirCopyKernel, "_DebugTex", _DebugTex);
         RayTracingShader.Dispatch(GenKernel, threadGroupsX, threadGroupsY, 1);
+        SetComputeBuffer(ShadeKernel, "CurrentReservoir", _CurrentReservoir);
+        SetComputeBuffer(ShadeKernel, "PreviousReservoir", _PreviousReservoir);
+        SetComputeBuffer(ShadowKernel, "CurrentReservoir", _CurrentReservoir);
+        SetComputeBuffer(ShadowKernel, "PreviousReservoir", _PreviousReservoir);
+
+        SetComputeBuffer(OctreeShadowKernel, "PreviousReservoir", _PreviousReservoir);
         for(int i = 0; i < bouncecount; i++) {
             var bouncebounce = i;
             RayTracingShader.SetInt("CurBounce", bouncebounce);
@@ -458,7 +507,33 @@ public class RayTracingMaster : MonoBehaviour {
             RayTracingShader.Dispatch(ShadeKernel, threadGroupsX2, threadGroupsY2, 1);
             if(UseNEE || AllowVolumetrics) RayTracingShader.Dispatch(ShadowKernel, 768, 1, 1);
             if(UseNEE || AllowVolumetrics) RayTracingShader.Dispatch(OctreeShadowKernel, 768, 1, 1);
-        }   
+
+        }
+        
+ UnityEngine.Profiling.Profiler.BeginSample("ReSTIR Reproject");
+         SetComputeBuffer(ReservoirKernel, "CurrentReservoir", _CurrentReservoir);
+         SetComputeBuffer(ReservoirKernel, "PreviousReservoir", _PreviousReservoir);
+         SetComputeBuffer(ReservoirKernel, "_LightMeshes", _LightMeshes);
+
+         RayTracingShader.SetTexture(ReservoirKernel, "TempAlbedoTex", _Albedo);
+         RayTracingShader.SetTexture(ReservoirKernel, "TempNormTex", _NormTex);
+         RayTracingShader.SetTexture(ReservoirKernel, "TempPosTex", _PosTex);
+         if(UseNEE || AllowVolumetrics)RayTracingShader.Dispatch(ReservoirKernel, Mathf.CeilToInt(SourceWidth / 3.0f), Mathf.CeilToInt(SourceWidth / 3.0f), 1);
+         UnityEngine.Profiling.Profiler.EndSample();
+        
+         SetComputeBuffer(ReservoirSpatialKernel, "CurrentReservoir", _CurrentReservoir);
+         SetComputeBuffer(ReservoirSpatialKernel, "PreviousReservoir", _PreviousReservoir);
+         UnityEngine.Profiling.Profiler.BeginSample("ReSTIR Spatial");
+         RayTracingShader.SetTexture(ReservoirSpatialKernel, "TempAlbedoTex", _Albedo);
+         RayTracingShader.SetTexture(ReservoirSpatialKernel, "TempNormTex", _NormTex);
+         RayTracingShader.SetTexture(ReservoirSpatialKernel, "TempPosTex", _PosTex);
+         if(UseNEE || AllowVolumetrics)RayTracingShader.Dispatch(ReservoirSpatialKernel, threadGroupsX3, threadGroupsY3, 1);
+         UnityEngine.Profiling.Profiler.EndSample();
+
+
+        SetComputeBuffer(ReservoirCopyKernel, "CurrentReservoir", _CurrentReservoir);
+        SetComputeBuffer(ReservoirCopyKernel, "PreviousReservoir", _PreviousReservoir);
+        RayTracingShader.Dispatch(ReservoirCopyKernel, threadGroupsX3, threadGroupsY3, 1);
         //I could try to optimize it by using a structured buffer that contains normals, colors, and positions, making it float3, float3, float2(compressed normal) to conserve a single float
         if(!UseSVGF) {
             RayTracingShader.SetTexture(FinalizeKernel, "Result", _target);
@@ -472,6 +547,9 @@ public class RayTracingMaster : MonoBehaviour {
             Denoisers.ExecuteSVGF(_currentSample, SVGFAtrousKernelSizes, ref _ColorBuffer, ref _PosTex, ref _target, ref _Albedo, ref _NormTex);
             CurrentSample = 1;
         }
+
+
+
 
         if (_addMaterial == null)
             _addMaterial = new Material(Shader.Find("Hidden/Accumulate"));
@@ -501,6 +579,7 @@ public class RayTracingMaster : MonoBehaviour {
         ClearOutRenderTexture(_DebugTex);
         _currentSample++; 
         FramesSinceStart++;  
+        FramesSinceStart2++;
     }
 
     private void OnRenderImage(RenderTexture source, RenderTexture destination) {

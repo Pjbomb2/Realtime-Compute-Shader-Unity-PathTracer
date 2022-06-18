@@ -21,6 +21,7 @@ public class AssetManager : MonoBehaviour {
     public List<MyMeshDataCompacted> MyMeshesCompacted;
      public List<CudaLightTriangle> AggLightTriangles;
     [HideInInspector] public List<LightData> UnityLights;
+    public List<Light> Lights;
 
     public ComputeShader MeshFunctions;
     private int TriangleBufferKernel;
@@ -243,6 +244,7 @@ public class AssetManager : MonoBehaviour {
         UnityLights = new List<LightData>();
         LightMeshes = new List<LightMeshData>();
         LightTransforms = new List<Transform>();
+        Lights = new List<Light>();
         LightMeshCount = 0;
         UnityLightCount = 0;
         LightTriCount = 0;
@@ -367,8 +369,9 @@ public class AssetManager : MonoBehaviour {
         if(AggLightTriangles.Count == 0) {AggLightTriangles.Add(new CudaLightTriangle() {});}
         didstart = false;
     }
-
+    int Counter;
     public void BuildCombined() {
+        Counter = 0;
         HasToDo = false;
         init();
         CurrentlyActiveVoxelTasks = new List<Task>();
@@ -564,13 +567,12 @@ public class AssetManager : MonoBehaviour {
         TempBuild();
         if(!didstart) {
             didstart = true;
+
         }
-       
-        
+
         UnityLights.Clear();
         float TotalEnergy = 0.0f;//(LightMeshes.Count != 0) ? LightMeshes[LightMeshes.Count - 1].TotalEnergy : 0.0f;
         UnityLightCount = 0;
-        RayTracingMaster._rayTracingLights.Sort((s1,s2) => s1.Energy.CompareTo(s2.Energy));
         foreach(RayTracingLights RayLight in RayTracingMaster._rayTracingLights) {
             UnityLightCount++;
             RayLight.UpdateLight();
@@ -588,7 +590,7 @@ public class AssetManager : MonoBehaviour {
         if(UnityLights.Count == 0) {UnityLights.Add(new LightData() {});}
         if(PrevLightCount != RayTracingMaster._rayTracingLights.Count) LightsHaveUpdated = true;
         PrevLightCount = RayTracingMaster._rayTracingLights.Count;
-
+       
         MyMeshesCompacted.Clear();     
         int MeshDataCount =  RenderQue.Count;
         int aggregated_bvh_node_count = 2 * MeshDataCount;
@@ -664,6 +666,7 @@ public class AssetManager : MonoBehaviour {
             VoxelTLAS = new List<BVHNode8DataCompressed>();
             VoxelTLAS.Add(new BVHNode8DataCompressed());
         }
+
         return (LightsHaveUpdated || ChildrenUpdated);//The issue is that all light triangle indices start at 0, and thus might not get correctly sorted for indices
     }
 

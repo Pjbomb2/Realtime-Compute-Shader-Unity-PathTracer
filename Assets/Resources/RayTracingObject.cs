@@ -32,11 +32,18 @@ public class RayTracingObject : MonoBehaviour {
 			MaterialIndex = new int[SubMeshCount];
 			Material[] SharedMaterials = (GetComponent<Renderer>() != null) ? GetComponent<Renderer>().sharedMaterials : GetComponent<SkinnedMeshRenderer>().sharedMaterials;
 			for(int i = 0; i < SubMeshCount; i++) {
+				bool EmissionColored = false;
+				if(SharedMaterials[i].GetTexture("_EmissionMap") != null) {
+					//emmission[i] = 12.0f;
+						//Color Col = ((Texture2D)SharedMaterials[i].GetTexture("_EmissionMap")).GetPixel(8,8,0);
+						//BaseColor[i] = new Vector3(Col.r, Col.g, Col.b);
+						EmissionColored = true;
+				}
 				if(SharedMaterials[i].GetFloat("_Mode") == 3.0f) {
 					MatType[i] = 2;
 					eta[i].x = 1.33f;
 				}
-				BaseColor[i] = (SharedMaterials[i].mainTexture == null) ? ((SharedMaterials[i].HasProperty("_Color")) ? new Vector3(SharedMaterials[i].color.r, SharedMaterials[i].color.g, SharedMaterials[i].color.b) : new Vector3(0.78f, 0.14f, 0.69f)) : new Vector3(0.78f, 0.14f, 0.69f);
+				if(!EmissionColored) BaseColor[i] = (SharedMaterials[i].mainTexture == null) ? ((SharedMaterials[i].HasProperty("_Color")) ? new Vector3(SharedMaterials[i].color.r, SharedMaterials[i].color.g, SharedMaterials[i].color.b) : new Vector3(0.78f, 0.14f, 0.69f)) : new Vector3(0.78f, 0.14f, 0.69f);
 			}
 		}
 		mesh = null;
